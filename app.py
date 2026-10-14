@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import hdbscan
 import requests
+from sklearn.preprocessing import normalize
 from mock_data import generate_switch_logs
 
 st.set_page_config(page_title="FinTech Ops Copilot", layout="wide")
@@ -46,9 +47,10 @@ def generate_diagnosis(cluster_logs):
     """
     
     prompt = f"""
-    You are an L1 support engineer for a financial payment switch.
+    You are a strict L1 support engineer for a financial payment switch.
     Analyze these clustered error logs and the runbook to diagnose the issue. 
-    Be concise. Do not hallucinate.
+    
+    CRITICAL INSTRUCTION: Your Recommended Action MUST be copied directly from the Runbook Context. Do not invent, guess, or provide generic advice outside of the Runbook.
 
     Runbook Context: {runbook}
     
@@ -77,30 +79,31 @@ col1, col2 = st.columns([2, 1])
 with col1:
     st.subheader("1. Transaction Observability (Incident Triage)")
     if st.button("Ingest & Analyze Recent Logs"):
-        with st.spinner("Ingesting logs & fetching embeddings via Ollama..."):
+        with st.spinner("Ingesting and correlating logs deterministically..."):
             df = generate_switch_logs()
-            st.write(f"Ingested {len(df)} logs. Applying semantic clustering...")
+            st.write(f"Ingested {len(df)} logs. Applying deterministic correlation...")
             
-            # Use Ollama for embeddings instead of PyTorch
-            embeddings = get_ollama_embeddings(df['error_msg'].tolist())
+            # DETERMINISTIC CORRELATION: Group by Bank ID and Response Code
+            # Find groups that have spiked (e.g., more than 10 errors in a short window)
+            spikes = df.groupby(['bank_id', 'response_code']).size().reset_index(name='count')
+            anomalies = spikes[spikes['count'] >= 10]
             
-            if embeddings:
-                # Cluster the embeddings using HDBSCAN
-                clusterer = hdbscan.HDBSCAN(min_cluster_size=5, metric='euclidean')
-                df['cluster'] = clusterer.fit_predict(embeddings)
+            if not anomalies.empty:
+                # Isolate the specific logs belonging to the spike
+                target_bank = anomalies.iloc[0]['bank_id']
+                target_code = anomalies.iloc[0]['response_code']
                 
-                anomalies = df[df['cluster'] != -1]
+                incident_logs = df[(df['bank_id'] == target_bank) & (df['response_code'] == target_code)]
                 
-                if not anomalies.empty:
-                    st.error(f"🚨 Systemic Anomaly Detected! ({len(anomalies)} related events)")
-                    st.dataframe(anomalies[['timestamp', 'bank_id', 'error_msg', 'response_code']])
-                    
-                    st.markdown("**LLM Diagnostic Assessment:**")
-                    with st.spinner("Generating AI diagnosis..."):
-                        diagnosis = generate_diagnosis(anomalies)
-                        st.info(diagnosis)
-                else:
-                    st.success("No systemic anomalies detected. Operational noise is within normal limits.")
+                st.error(f"🚨 Systemic Anomaly Detected! ({len(incident_logs)} related events for {target_bank})")
+                st.dataframe(incident_logs[['timestamp', 'bank_id', 'error_msg', 'response_code']])
+                
+                st.markdown("**LLM Diagnostic Assessment:**")
+                with st.spinner("Generating AI diagnosis based on deterministic cluster..."):
+                    diagnosis = generate_diagnosis(incident_logs)
+                    st.info(diagnosis)
+            else:
+                st.success("No systemic anomalies detected. Operational noise is within normal limits.")
 
 with col2:
     st.subheader("2. Legacy CBS Integration")
